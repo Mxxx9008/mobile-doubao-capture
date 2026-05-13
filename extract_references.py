@@ -1,9 +1,16 @@
-import json, re, os
+import json, re, os, sys
 from collections import Counter
 from datetime import datetime
 
-CAPTURE = r"C:\Users\31760\Desktop\doubao_capture_20260513_115722.txt"
-OUTPUT = r"C:\Users\31760\Desktop"
+# Accept paths from command line or env, with sensible defaults
+CAPTURE = sys.argv[1] if len(sys.argv) > 1 else os.environ.get(
+    "CAPTURE_FILE",
+    os.path.join(os.path.expanduser("~"), "Desktop", "doubao_capture.txt")
+)
+OUTPUT = sys.argv[2] if len(sys.argv) > 2 else os.environ.get(
+    "OUTPUT_DIR",
+    os.path.join(os.path.expanduser("~"), "Desktop")
+)
 
 with open(CAPTURE, "r", encoding="utf-8") as f:
     content = f.read()
