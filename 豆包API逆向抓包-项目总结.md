@@ -1,8 +1,8 @@
 # 豆包 APP API 逆向抓包 — 项目总结
 
 > **目标**: 捕获豆包 Android App 的聊天 API 请求/响应明文  
-> **成果**: 完整解密 HTTPS 通信，识别全部 API 端点及协议架构  
-> **耗时**: 约 2.5 小时  
+> **成果**: 完整解密 HTTPS 通信，识别全部 API 端点及协议架构；实现参考文献自动提取与多会话管理  
+> **耗时**: Day 1 约 2.5h + Day 2 约 3h  
 
 ---
 
@@ -33,6 +33,7 @@ Mumu 模拟器            logcat 抓日志          Frida 注入          mitmpr
 | **mitmproxy** | 中间人代理，拦截 HTTPS 流量 | latest (pip) |
 | **Frida** | 运行时动态注入，绕过 SSL Pinning | 17.9.8 |
 | **objection** | Frida 的上层封装（未成功，见下文） | 1.12.4 |
+| **Python** | 数据解析脚本 (`extract_references.py`) | 3.13 |
 
 ---
 
@@ -158,18 +159,148 @@ chunk 1: "你" → chunk 2: "是" → ... → chunk 10: "" (is_finish=1)
 
 ---
 
-## 七、环境速查
+## 七、Day 2：参考文献提取与多会话管理 (2026-05-13)
+
+### 7.1 SSE 协议深度解析
+
+Day 1 已发现 SSE 协议，Day 2 进一步挖掘了两种关键 `cmd` 的数据结构：
+
+#### cmd:50200 — 参考文献事件
+
+```
+downlink_body.bot_reply_loading_update_notify.ext
+  ├── search_references   ← JSON 字符串，内含 text_card[]
+  │     └── text_card: { id, title, url, sitename, summary, ... }
+  ├── search_queries      ← JSON 字符串数组，搜索关键词
+  ├── agent_intention     ← "browsing" / "chat" 等模式标识
+  ├── message_id          ← 消息唯一 ID
+  └── conversation_id     ← 对话框 ID
+```
+
+#### cmd:300 — 回答文本流
+
+```
+downlink_body.fetch_chunk_message_downlink_body
+  ├── message_id          ← 消息 ID（与 50200 关联）
+  ├── content             ← JSON 字符串 { text: "..." }
+  ├── ext.mult_query      ← 用户问题文本
+  └── is_finish           ← 流结束标志
+```
+
+### 7.2 参考文献自动提取管道
+
+`extract_references.py` 实现了完整的解析 → 去重 → 分组 → 输出管道：
+
+```
+mitmproxy 捕获文件 (.txt)
+    → 逐行解析 SSE data: {...} JSON
+    → 提取 cmd:50200 → search_references + search_queries + agent_intention
+    → 提取 cmd:300 → answer text + mult_query
+    → URL 去重 (每次问答内)
+    → 按 conversation_id 分组
+    → 写入 doubao_conv_{conversation_id}.json
+```
+
+**输出 JSON 结构**（与样本文件格式一致）：
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "conversation_id": "...",
+    "updated_at": "2026-05-13T...",
+    "conversations": [
+      {
+        "task_id": "...",
+        "question": "用户问题",
+        "mode": "browsing",
+        "search_keywords": ["关键词1", "关键词2"],
+        "search_sources": [
+          {"title": "...", "url": "...", "sitename": "...", "summary": "..."}
+        ],
+        "search_summary": "搜索 N 个关键词，参考 M 篇资料",
+        "answer": "豆包的回答全文...",
+        "total_references": 16,
+        "statistics": {
+          "sitename_counts": {"新浪财经": 3, "知乎": 2, ...},
+          "brands": ["苹果", "Apple", "iPhone"],
+          "token_usage": { "total_input_tokens": 0, "total_output_tokens": 0, "total_tokens": 0 }
+        }
+      }
+    ]
+  }
+}
+```
+
+### 7.3 多会话文件管理策略
+
+| 场景 | 行为 |
+|------|------|
+| 新对话框 | 创建新 JSON 文件 `doubao_conv_{cid}.json` |
+| 同一对话框多次提问 | 新 QA 追加到已有文件的 `conversations[]`，不重复添加相同 `task_id` |
+| 多次抓包同一会话 | 自动合并，按 `task_id` 去重，`updated_at` 刷新 |
+
+### 7.4 品牌 & 来源统计
+
+- **品牌识别**: 从参考文献的 `title` + `summary` 中匹配预定义的品牌关键词列表（苹果/Apple/iPhone/华为/大疆/DJI/小米/三星 等）
+- **来源统计**: 按 `sitename` 聚合，生成 `{ "知乎": 5, "新浪财经": 3, ... }` 分布
+
+### 7.5 捕获到的算法 Bug
+
+extract_references.py 使用 `int(mid)` 排序时，遇大 ID 会引发 OverflowError。用字符串直接比较替代 `sorted(msg_refs.keys(), key=int)` 已规避，但 Python int 对大数仍友好。
+
+### 7.6 Frida 注入稳定性
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| `frida.attach("com.larus.nova")` 失败 | 包名无法解析 | 改用 PID 注入 (`frida_inject.py`) |
+| `frida.attach(pid)` PermissionDeniedError | frida-server 以 shell 用户运行 | `adb root` + 重启 frida-server |
+| Frida 注入 600s 后超时 | Frida 默认超时机制 | 新对话前需重新注入 Frida |
+
+### 7.7 实际输出成果
+
+两次抓包产生 2 个会话文件，共 4 条 QA：
+
+| 文件 | 会话 ID | 问题 | 参考文献数 |
+|------|--------|------|-----------|
+| `doubao_conv_6834621451355906.json` | 6834621451355906 | iPhone 16 Pro 使用体验 | 16 |
+| | | MacBook Air M5 | 10 |
+| `doubao_conv_38425770128159746.json` | 38425770128159746 | 战斗机拌面的由来 | 17 |
+| | | 战斗机拌面的起源 | 19 |
+
+---
+
+## 八、GitHub 版本管理
+
+全部项目文件已推送至 **Mxxx9008/mxxx-shameless**：
+
+| 文件 | 说明 |
+|------|------|
+| `frida_ssl_bypass.js` | Frida JavaScript SSL 绕过脚本 |
+| `frida_inject.py` | Python Frida 注入器（按 PID） |
+| `frida_attach.py` | Python Frida 注入器（按包名） |
+| `extract_references.py` | 参考文献提取管道 |
+| `doubao_api_analysis.txt` | API 协议分析笔记 |
+| `doubao_conv_*.json` | 会话 JSON 输出文件 |
+| `.gitignore` | 排除大型捕获文件 |
+
+> 捕获的 `.txt` 原始文件不提交（单个可达数十 MB），仅保留解析后的 JSON。
+
+---
+
+## 九、环境速查
 
 | 组件 | 位置/命令 |
 |------|-----------|
 | ADB | `C:\Users\31760\platform-tools\platform-tools\adb.exe` |
 | mitmdump | `C:\Users\31760\AppData\Local\Programs\Python\Python313\Scripts\mitmdump` |
-| Frida Python | `C:\Users\31760\frida_inject.py` |
+| Frida 注入脚本 | `C:\Users\31760\frida_inject.py` |
 | Frida SSL 脚本 | `C:\Users\31760\frida_ssl_bypass.js` |
-| mitmproxy 日志 | `C:\Users\31760\doubao_mitmproxy_log2.txt` |
+| 参考文献提取 | `C:\Users\31760\extract_references.py` |
 | API 分析文档 | `C:\Users\31760\doubao_api_analysis.txt` |
 | Mumu ADB 端口 | `127.0.0.1:5555` |
+| GitHub 仓库 | `Mxxx9008/mxxx-shameless` |
 
 ---
 
-> **一句话总结**: ADB 连设备 → mitmproxy 做代理 → Frida 绕 SSL → 明文到手。全程无 Root，两小时内从零到完整抓包。
+> **一句话总结**: Day 1 — ADB 连设备 → mitmproxy 做代理 → Frida 绕 SSL → 明文到手；Day 2 — SSE 深度解析 → 参考文献自动提取 → 多会话 JSON 管理 → GitHub 版本化。全程无 Root，两个半天内从零到完整可复现工具链。
