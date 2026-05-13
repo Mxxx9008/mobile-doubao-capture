@@ -1,0 +1,6 @@
+# Large capture files
+*.mitm
+doubao_capture_*.txt
+doubao_mitmproxy_log*.txt
+__pycache__/
+*.pyc

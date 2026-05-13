@@ -1,0 +1,90 @@
+=== 豆包 (Doubao) API 完整抓包分析 ===
+抓包时间: 2026-05-12 20:08-20:15
+工具链: mitmproxy + Frida SSL bypass
+App: 豆包 v8.2.0 (com.larus.nova)
+域: api-normal.doubao.com
+
+=== 完整聊天流程 ===
+
+你发的消息: "我是谁"
+豆包回复: "你是全世界最帅的大帅哥😜"
+
+=== API 调用链 (按时间顺序) ===
+
+1. POST /im/send/message?flow_im_arch=v2
+   └─ cmd: 4210, 建立消息槽位
+      请求: {"conversation_id":"6834621451355906","local_message_id":"..."}
+      响应: status_code: 0 (OK)
+
+2. POST /im/sse/send/message?flow_im_arch=v2
+   └─ SSE 流式发送 (真正的消息正文在这里!)
+      请求: {
+        "send_message_body": {
+          "content": "{\"im_cmd\":-1,\"text\":\"我是谁\"}",
+          "content_type": 1,
+          "answer_with_suggest": true,
+          "send_message_scene": "keyboard",
+          "conversation_id": "6834621451355906"
+        }
+      }
+      响应:
+        - SSE ack: message_id=44805214842888706, sse_token=...
+        - SSE notify: bot_reply_message_id, bot_id=7234781073513644036
+
+3. SSE 流式推送 (cmd:300) — 豆包逐字回复:
+    chunk 1:  {"text":"你"}
+    chunk 2:  {"text":"是"}
+    chunk 3:  {"text":"全世界"}
+    chunk 4:  {"text":"最"}
+    chunk 5:  {"text":"帅"}
+    chunk 6:  {"text":"的"}
+    chunk 7:  {"text":"大"}
+    chunk 8:  {"text":"帅哥"}
+    chunk 9:  {"text":"😜"}
+    chunk 10: {"text":""} is_finish=1 brief="你是全世界最帅的大帅哥😜"
+
+4. cmd:50400 — reply_end (对话结束)
+
+5. POST /im/message/mark_conv_read — 标记已读
+
+=== 协议分析 ===
+
+协议类型: 自研 IM 协议 (flow_im_arch=v2)
+通信方式: HTTP/2.0 + SSE (Server-Sent Events)
+内容编码: JSON 嵌套字符串 (content 字段内是 JSON string)
+模型标识:
+  - bot_id: 7234781073513644036
+  - agent_id: 7342864811136729123
+  - agent_name: Doubao
+  - seed_agent_name: Agent-Chat
+  - llm_model_type: 38
+  - llm_intention: seed_main
+
+=== Headers 分析 ===
+
+安全签名链 (字节自研签名体系):
+  x-ss-stub      — 请求指纹
+  x-gorgon       — 请求签名
+  x-helios       — 设备签名
+  x-medusa       — 加密载荷 (最大最复杂的 header)
+  x-argus        — 行为签名
+  x-ladon        — 会话签名
+  x-khronos      — 时间戳签名
+  x-tt-token     — 认证 Token
+
+=== 设备/用户参数 ===
+  uid: 1919073311011616
+  device_id: 674413749753593
+  iid: 674413749757689
+  app_name: nova_ai
+  version_code: 8020001
+  channel: 46016359a
+
+=== 工具部署总结 ===
+
+成功搭建了:
+  Mumu模拟器 (Android 12, 无root)
+  + ADB (platform-tools)
+  + mitmproxy (代理抓包)
+  + Frida (SSL pinning 绕过)
+  → 完整捕获豆包 HTTPS 明文通信
