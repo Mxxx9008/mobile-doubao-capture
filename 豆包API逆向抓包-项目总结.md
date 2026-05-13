@@ -272,7 +272,7 @@ extract_references.py 使用 `int(mid)` 排序时，遇大 ID 会引发 Overflow
 
 ## 八、GitHub 版本管理
 
-全部项目文件已推送至 **Mxxx9008/mxxx-shameless**：
+全部项目文件已推送至 **Mxxx9008/mobile-doubao-capture**：
 
 | 文件 | 说明 |
 |------|------|
@@ -299,7 +299,7 @@ extract_references.py 使用 `int(mid)` 排序时，遇大 ID 会引发 Overflow
 | 参考文献提取 | `C:\Users\31760\extract_references.py` |
 | API 分析文档 | `C:\Users\31760\doubao_api_analysis.txt` |
 | Mumu ADB 端口 | `127.0.0.1:5555` |
-| GitHub 仓库 | `Mxxx9008/mxxx-shameless` |
+| GitHub 仓库 | `Mxxx9008/mobile-doubao-capture` |
 
 ---
 
